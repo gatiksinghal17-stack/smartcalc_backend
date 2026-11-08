@@ -9,7 +9,10 @@ if (!GEMINI_API_KEY) {
 }
 
 app.use(express.json({ limit: '10mb' }));
-
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
 const candidateModels = [
   'gemini-3-flash-preview',
   'gemini-3.5-flash-lite',
@@ -47,10 +50,11 @@ function buildPrompt({ subject, question }) {
 async function callGemini(model, requestBody) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  });
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(requestBody),
+  signal: AbortSignal.timeout(20000),
+});
 
   const responseText = await response.text();
   let data = null;
