@@ -37,18 +37,24 @@ app.use((req, res, next) => {
 const REASONING_MODELS = [
   'gemini-3.8-flash',
   'gemini-3.6-flash',
+  'gemini-2.5-flash',
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite'
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash'
 ];
-
-// Fast models for normal text questions.
 
 const FAST_TEXT_MODELS = [
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
-  'gemini-3.8-flash',
-  'gemini-3.6-flash'
+  'gemini-2.5-flash-lite',
+  'gemma-4-31b-it',
+  'gemma-4-27b-it',
+  'gemma-3-27b-it',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash'
 ];
+
 
 // ==========================================
 // CACHE CONFIGURATION
