@@ -2,21 +2,24 @@ const express = require('express');
 const crypto = require('crypto');
 
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 
-if (!GEMINI_API_KEY) {
-  console.error('[ERROR] Missing GEMINI_API_KEY environment variable.');
-}
-
 // ==========================================
 // CONFIGURATION
 // ==========================================
 
-app.use(express.json({ limit: '10mb' }));
+if (!GEMINI_API_KEY) {
+  console.error('[ERROR] GEMINI_API_KEY is missing.');
+}
+
+app.use(express.json({
+  limit: '12mb'
+}));
 
 app.use((req, res, next) => {
   console.log(
@@ -29,49 +32,35 @@ app.use((req, res, next) => {
 // GEMINI MODEL CONFIGURATION
 // ==========================================
 
-// Strong reasoning models for images and complex STEM problems.
+// Strong models for images and complex problems.
 
 const REASONING_MODELS = [
   'gemini-3.8-flash',
-  'gemini-3.7-flash',
   'gemini-3.6-flash',
-  'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemini-2.5-flash-lite'
+  'gemini-3.1-flash-lite'
 ];
 
-// Fast models for standard text questions.
+// Fast models for normal text questions.
 
 const FAST_TEXT_MODELS = [
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash-lite',
-  'gemma-4-31b-it',
-  'gemma-4-27b-it',
-  'gemma-3-27b-it',
   'gemini-3.8-flash',
   'gemini-3.6-flash'
 ];
 
 // ==========================================
-// CACHE AND COOLDOWN CONFIGURATION
+// CACHE CONFIGURATION
 // ==========================================
 
 const modelCooldowns = new Map();
-
 const responseCache = new Map();
 
 const MAX_CACHE_SIZE = 500;
 const CACHE_TTL = 5 * 60 * 1000;
 
 const MAX_IMAGE_SIZE = 7 * 1024 * 1024;
-
-const ALLOWED_IMAGE_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp'
-];
 
 // ==========================================
 // UTILITY FUNCTIONS
@@ -101,7 +90,7 @@ function setModelCooldown(model, seconds = 60) {
   );
 
   console.log(
-    `[Cooldown] ${model} disabled for ${seconds} seconds.`
+    `[Cooldown] ${model}: ${seconds}s`
   );
 }
 
@@ -114,10 +103,8 @@ function isComplexProblem(question) {
 
   if (question.length > 180) return true;
 
-  const complexKeywords =
-    /(integral|integrate|derivative|differentiate|differential|limit|matrix|matrices|determinant|eigen|vector|prove|proof|theorem|kinematics|thermodynamics|quantum|circuit|organic|stoichiometry|equilibrium|polynomial|trigonometr|logarithm|probability|permutation|combination)/i;
-
-  return complexKeywords.test(question);
+  return /(integral|integrate|derivative|differentiate|differential|limit|matrix|matrices|determinant|eigen|vector|prove|proof|theorem|kinematics|thermodynamics|quantum|circuit|organic|stoichiometry|equilibrium|polynomial|trigonometr|logarithm|probability|permutation|combination)/i
+    .test(question);
 }
 
 // ==========================================
@@ -125,9 +112,10 @@ function isComplexProblem(question) {
 // ==========================================
 
 function buildPrompt({ subject, question }) {
+
   const lines = [
     'You are an expert Math, Physics, and Chemistry tutor.',
-    'Solve the given problem in the image or text with accurate, complete, step-by-step explanations.'
+    'Solve the given problem accurately with complete step-by-step explanations.'
   ];
 
   if (subject && subject !== 'Auto Detect') {
@@ -142,7 +130,7 @@ function buildPrompt({ subject, question }) {
     '',
     'IMPORTANT FORMATTING INSTRUCTIONS:',
     '',
-    '1. Do not wrap your entire response in a markdown code block.',
+    '1. Do not wrap the entire response in a markdown code block.',
     '',
     '2. Use these exact section headings:',
     '### 1. Problem Summary',
@@ -151,22 +139,225 @@ function buildPrompt({ subject, question }) {
     '### 4. Final Answer',
     '### 5. Quick Concept Tip',
     '',
-    '3. Under Final Answer, clearly highlight the final simplified answer in bold, including units where applicable.',
+    '3. Highlight the final simplified answer in bold.',
     '',
-    '4. Use bold formatting for important formulas, laws and intermediate values.',
+    '4. Include units wherever applicable.',
     '',
-    '5. Explain calculations step by step. Do not skip important mathematical steps.',
+    '5. Use bold formatting for important formulas, laws and intermediate values.',
     '',
-    '6. If information is missing from the problem, clearly mention the assumption instead of inventing data.',
+    '6. Explain calculations step by step without skipping important steps.',
     '',
-    '7. If an image is provided, carefully inspect the image before solving.'
+    '7. Never invent missing information.',
+    '',
+    '8. Carefully inspect the provided image before solving.'
   );
 
   return lines.join('\n');
 }
 
 // ==========================================
-// GEMINI API CALL
+// IMAGE VALIDATION AND CONVERSION
+// ==========================================
+
+function validateImage(imageInput, mimeType) {
+
+  try {
+
+    if (
+      !imageInput ||
+      typeof imageInput !== 'string'
+    ) {
+      return {
+        ok: false,
+        error: 'No valid image data received.'
+      };
+    }
+
+    let base64 = imageInput.trim();
+
+    // Default MIME type.
+
+    let detectedMime = mimeType || '';
+
+    // --------------------------------------
+    // HANDLE DATA URL
+    // --------------------------------------
+
+    if (/^data:/i.test(base64)) {
+
+      const match = base64.match(
+        /^data:([^;,]+);base64,([\s\S]*)$/i
+      );
+
+      if (!match) {
+        return {
+          ok: false,
+          error: 'Invalid image Data URL.'
+        };
+      }
+
+      detectedMime = match[1].toLowerCase();
+      base64 = match[2];
+    }
+
+    // --------------------------------------
+    // CLEAN BASE64
+    // --------------------------------------
+
+    base64 = base64.replace(/\s/g, '');
+
+    // Support URL-safe Base64.
+
+    base64 = base64
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+
+    // Remove existing padding.
+
+    base64 = base64.replace(/=+$/, '');
+
+    if (!base64) {
+      return {
+        ok: false,
+        error: 'Image data is empty.'
+      };
+    }
+
+    // Validate Base64 characters.
+
+    if (!/^[A-Za-z0-9+/]+$/.test(base64)) {
+      return {
+        ok: false,
+        error: 'Invalid Base64 image data.'
+      };
+    }
+
+    // Invalid Base64 length.
+
+    if (base64.length % 4 === 1) {
+      return {
+        ok: false,
+        error: 'Corrupted image data.'
+      };
+    }
+
+    // Restore missing padding.
+
+    base64 += '='.repeat(
+      (4 - base64.length % 4) % 4
+    );
+
+    // --------------------------------------
+    // DECODE BASE64
+    // --------------------------------------
+
+    const imageBuffer = Buffer.from(
+      base64,
+      'base64'
+    );
+
+    if (!imageBuffer.length) {
+      return {
+        ok: false,
+        error: 'Unable to decode image.'
+      };
+    }
+
+    // Check image size.
+
+    if (imageBuffer.length > MAX_IMAGE_SIZE) {
+      return {
+        ok: false,
+        error: 'Image exceeds the 7 MB limit.'
+      };
+    }
+
+    // --------------------------------------
+    // DETECT ACTUAL IMAGE FORMAT
+    // --------------------------------------
+
+    let actualMime = null;
+
+    // JPEG
+
+    if (
+      imageBuffer.length >= 3 &&
+      imageBuffer[0] === 0xFF &&
+      imageBuffer[1] === 0xD8 &&
+      imageBuffer[2] === 0xFF
+    ) {
+
+      actualMime = 'image/jpeg';
+
+    }
+
+    // PNG
+
+    else if (
+      imageBuffer.length >= 8 &&
+      imageBuffer.subarray(0, 8).equals(
+        Buffer.from([
+          0x89, 0x50, 0x4E, 0x47,
+          0x0D, 0x0A, 0x1A, 0x0A
+        ])
+      )
+    ) {
+
+      actualMime = 'image/png';
+
+    }
+
+    // WEBP
+
+    else if (
+      imageBuffer.length >= 12 &&
+      imageBuffer.toString('ascii', 0, 4) === 'RIFF' &&
+      imageBuffer.toString('ascii', 8, 12) === 'WEBP'
+    ) {
+
+      actualMime = 'image/webp';
+
+    }
+
+    // --------------------------------------
+    // CHECK IMAGE FORMAT
+    // --------------------------------------
+
+    if (!actualMime) {
+
+      return {
+        ok: false,
+        error: 'Unsupported image format. Please use JPEG, PNG or WebP.'
+      };
+
+    }
+
+    console.log(
+      `[Image] Valid image received: ${actualMime}, ${imageBuffer.length} bytes`
+    );
+
+    // Return normalized Base64.
+
+    return {
+      ok: true,
+      data: base64,
+      mimeType: actualMime
+    };
+
+  } catch (error) {
+
+    console.error('[Image Error]', error);
+
+    return {
+      ok: false,
+      error: 'Unable to process image.'
+    };
+
+  }
+}
+
+// ==========================================
+// GEMINI API REQUEST
 // ==========================================
 
 async function callGemini(model, requestBody) {
@@ -175,6 +366,7 @@ async function callGemini(model, requestBody) {
     `${GEMINI_BASE_URL}/${encodeURIComponent(model)}:generateContent`;
 
   const response = await fetch(url, {
+
     method: 'POST',
 
     headers: {
@@ -184,7 +376,8 @@ async function callGemini(model, requestBody) {
 
     body: JSON.stringify(requestBody),
 
-    signal: AbortSignal.timeout(20000)
+    signal: AbortSignal.timeout(30000)
+
   });
 
   const responseText = await response.text();
@@ -195,17 +388,18 @@ async function callGemini(model, requestBody) {
     data = JSON.parse(responseText);
   } catch (_) {}
 
+  // --------------------------------------
+  // SUCCESS RESPONSE
+  // --------------------------------------
+
   if (
     response.ok &&
-    data &&
-    Array.isArray(data.candidates) &&
+    Array.isArray(data?.candidates) &&
     data.candidates.length > 0
   ) {
 
-    const candidate = data.candidates[0];
-
     const parts =
-      candidate?.content?.parts || [];
+      data.candidates[0]?.content?.parts || [];
 
     const generatedText = parts
       .filter(part => typeof part.text === 'string')
@@ -213,17 +407,23 @@ async function callGemini(model, requestBody) {
       .join('\n');
 
     if (generatedText.trim()) {
+
       return {
         ok: true,
         text: generatedText
       };
+
     }
   }
 
-  const message =
+  // --------------------------------------
+  // ERROR RESPONSE
+  // --------------------------------------
+
+  let message =
     data?.error?.message ||
-    candidateErrorMessage(data) ||
-    `Gemini API returned status ${response.status}`;
+    data?.promptFeedback?.blockReason ||
+    'Gemini returned an empty response.';
 
   return {
     ok: false,
@@ -232,132 +432,8 @@ async function callGemini(model, requestBody) {
   };
 }
 
-function candidateErrorMessage(data) {
-  const reason = data?.promptFeedback?.blockReason;
-
-  if (reason) {
-    return `Request blocked by Gemini safety filters: ${reason}`;
-  }
-
-  return 'Gemini returned no usable response.';
-}
-
 // ==========================================
-// MODEL AVAILABILITY VERIFICATION
-// ==========================================
-
-async function verifyAvailableModels() {
-
-  if (!GEMINI_API_KEY) return;
-
-  console.log('[Startup Check] Checking available Gemini models...');
-
-  try {
-
-    let pageToken = null;
-
-    const available = new Set();
-
-    // Retrieve model catalogue, including additional pages.
-
-    do {
-
-      const url = new URL(
-        `${GEMINI_BASE_URL}`
-      );
-
-      // Correct endpoint is /v1beta/models.
-      const listUrl = new URL(
-        'https://generativelanguage.googleapis.com/v1beta/models'
-      );
-
-      listUrl.searchParams.set('pageSize', '100');
-
-      if (pageToken) {
-        listUrl.searchParams.set('pageToken', pageToken);
-      }
-
-      const res = await fetch(listUrl.toString(), {
-
-        headers: {
-          'x-goog-api-key': GEMINI_API_KEY
-        },
-
-        signal: AbortSignal.timeout(10000)
-
-      });
-
-      if (!res.ok) {
-
-        console.log(
-          '[Startup Check] Verification failed:',
-          res.status
-        );
-
-        return;
-      }
-
-      const data = await res.json();
-
-      if (!Array.isArray(data.models)) return;
-
-      for (const model of data.models) {
-
-        const name = (model.name || '')
-          .replace(/^models\//, '');
-
-        const supportsGenerate =
-          (model.supportedGenerationMethods || [])
-            .includes('generateContent');
-
-        if (name && supportsGenerate) {
-          available.add(name);
-        }
-      }
-
-      pageToken = data.nextPageToken || null;
-
-    } while (pageToken);
-
-    const allConfigured = new Set([
-      ...REASONING_MODELS,
-      ...FAST_TEXT_MODELS
-    ]);
-
-    for (const model of allConfigured) {
-
-      if (!available.has(model)) {
-
-        console.log(
-          `[Startup Check] Unavailable model: ${model}`
-        );
-
-        setModelCooldown(model, 86400);
-
-      } else {
-
-        modelCooldowns.delete(model);
-
-        console.log(
-          `[Startup Check] Available: ${model}`
-        );
-      }
-    }
-
-    console.log('[Startup Check] Model verification complete.');
-
-  } catch (err) {
-
-    console.log(
-      '[Startup Check] Verification skipped:',
-      err.message
-    );
-
-  }
-}
-
-// ==========================================
-// RESPONSE CACHE
+// CACHE FUNCTIONS
 // ==========================================
 
 function getCachedResponse(key) {
@@ -373,7 +449,7 @@ function getCachedResponse(key) {
     return null;
   }
 
-  // Refresh insertion order for basic LRU behavior.
+  // Refresh insertion order.
 
   responseCache.delete(key);
 
@@ -390,80 +466,103 @@ function saveCachedResponse(key, solution) {
       responseCache.keys().next().value;
 
     responseCache.delete(oldestKey);
+
   }
 
   responseCache.set(key, {
+
     solution,
+
     timestamp: Date.now()
+
   });
+
 }
 
 // ==========================================
-// IMAGE VALIDATION
+// MODEL AVAILABILITY CHECK
 // ==========================================
 
-function validateImage(imageBase64, mimeType) {
+async function verifyAvailableModels() {
 
-  if (!imageBase64) {
-    return {
-      ok: true,
-      data: null
-    };
+  if (!GEMINI_API_KEY) return;
+
+  try {
+
+    console.log('[Startup] Checking Gemini models...');
+
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=100',
+      {
+        headers: {
+          'x-goog-api-key': GEMINI_API_KEY
+        },
+        signal: AbortSignal.timeout(10000)
+      }
+    );
+
+    if (!response.ok) {
+
+      console.log(
+        '[Startup] Model verification skipped:',
+        response.status
+      );
+
+      return;
+
+    }
+
+    const data = await response.json();
+
+    if (!Array.isArray(data.models)) return;
+
+    const available = new Set(
+
+      data.models
+        .filter(model =>
+          (model.supportedGenerationMethods || [])
+            .includes('generateContent')
+        )
+        .map(model =>
+          (model.name || '').replace(/^models\//, '')
+        )
+
+    );
+
+    const allModels = new Set([
+      ...REASONING_MODELS,
+      ...FAST_TEXT_MODELS
+    ]);
+
+    for (const model of allModels) {
+
+      if (available.has(model)) {
+
+        modelCooldowns.delete(model);
+
+        console.log(`[Startup] Available: ${model}`);
+
+      } else {
+
+        setModelCooldown(model, 86400);
+
+        console.log(`[Startup] Unavailable: ${model}`);
+
+      }
+
+    }
+
+    console.log('[Startup] Model verification completed.');
+
+  } catch (error) {
+
+    console.log(
+      '[Startup] Verification skipped:',
+      error.message
+    );
+
   }
 
-  // Accept raw base64 or a data URL.
-
-  let cleanBase64 = imageBase64;
-
-  const dataUrlMatch = imageBase64.match(
-    /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/
-  );
-
-  if (dataUrlMatch) {
-    mimeType = dataUrlMatch[1];
-    cleanBase64 = dataUrlMatch[2];
-  }
-
-  if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) {
-
-    return {
-      ok: false,
-      error: 'Unsupported image format. Use JPEG, PNG or WebP.'
-    };
-  }
-
-  cleanBase64 = cleanBase64.replace(/\s/g, '');
-
-  if (
-    !cleanBase64 ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(cleanBase64) ||
-    cleanBase64.length % 4 !== 0
-  ) {
-
-    return {
-      ok: false,
-      error: 'Invalid image data.'
-    };
-  }
-
-  const estimatedSize =
-    Math.floor(cleanBase64.length * 3 / 4) -
-    (cleanBase64.endsWith('==') ? 2 :
-      cleanBase64.endsWith('=') ? 1 : 0);
-
-  if (estimatedSize > MAX_IMAGE_SIZE) {
-
-    return {
-      ok: false,
-      error: 'Image is too large. Maximum size is 7 MB.'
-    };
-  }
-
-  return {
-    ok: true,
-    data: cleanBase64,
-    mimeType
-  };
 }
 
 // ==========================================
@@ -487,7 +586,7 @@ app.get('/health', (_req, res) => {
 });
 
 // ==========================================
-// MAIN SOLVER API
+// MAIN SOLVER ENDPOINT
 // ==========================================
 
 app.post('/solve', async (req, res) => {
@@ -502,69 +601,71 @@ app.post('/solve', async (req, res) => {
 
       return res.status(500).json({
 
-        error: 'AI solver is not configured on the server.'
+        error: 'AI solver is not configured.'
 
       });
 
     }
 
     // --------------------------------------
-    // INPUT VALIDATION
+    // RECEIVE INPUT
     // --------------------------------------
 
-    const {
-      subject,
-      question,
-      imageBase64,
-      mimeType
-    } = req.body || {};
+    const body = req.body || {};
 
-    if (
-      question !== undefined &&
-      typeof question !== 'string'
-    ) {
+    const subject = body.subject || 'Auto Detect';
 
-      return res.status(400).json({
+    const question =
+      typeof body.question === 'string'
+        ? body.question.trim()
+        : '';
 
-        error: 'Question must be a text string.'
+    // Support common Android request field names.
 
-      });
+    const imageBase64 =
+      body.imageBase64 ||
+      body.base64Image ||
+      body.image ||
+      null;
 
-    }
-
-    if (
-      subject !== undefined &&
-      typeof subject !== 'string'
-    ) {
-
-      return res.status(400).json({
-
-        error: 'Subject must be a text string.'
-
-      });
-
-    }
-
-    if (
-      imageBase64 !== undefined &&
-      typeof imageBase64 !== 'string'
-    ) {
-
-      return res.status(400).json({
-
-        error: 'Invalid image data.'
-
-      });
-
-    }
-
-    const cleanQuestion = (question || '').trim();
-
-    const cleanSubject = subject || 'Auto Detect';
+    const mimeType =
+      body.mimeType ||
+      body.imageMimeType ||
+      'image/jpeg';
 
     const hasImage = Boolean(imageBase64);
 
-    if (!hasImage && !cleanQuestion) {
+    // --------------------------------------
+    // VALIDATE INPUT
+    // --------------------------------------
+
+    if (
+      body.question !== undefined &&
+      typeof body.question !== 'string'
+    ) {
+
+      return res.status(400).json({
+
+        error: 'Question must be a string.'
+
+      });
+
+    }
+
+    if (
+      body.subject !== undefined &&
+      typeof body.subject !== 'string'
+    ) {
+
+      return res.status(400).json({
+
+        error: 'Subject must be a string.'
+
+      });
+
+    }
+
+    if (!hasImage && !question) {
 
       return res.status(400).json({
 
@@ -574,7 +675,7 @@ app.post('/solve', async (req, res) => {
 
     }
 
-    if (cleanQuestion.length > 20000) {
+    if (question.length > 20000) {
 
       return res.status(400).json({
 
@@ -594,10 +695,15 @@ app.post('/solve', async (req, res) => {
 
       validatedImage = validateImage(
         imageBase64,
-        mimeType || 'image/jpeg'
+        mimeType
       );
 
       if (!validatedImage.ok) {
+
+        console.error(
+          '[Image Validation Failed]',
+          validatedImage.error
+        );
 
         return res.status(400).json({
 
@@ -606,6 +712,7 @@ app.post('/solve', async (req, res) => {
         });
 
       }
+
     }
 
     // --------------------------------------
@@ -619,7 +726,7 @@ app.post('/solve', async (req, res) => {
       cacheKey = crypto
         .createHash('sha256')
         .update(
-          `${cleanSubject}::${cleanQuestion.toLowerCase()}`
+          `${subject}::${question.toLowerCase()}`
         )
         .digest('hex');
 
@@ -636,10 +743,11 @@ app.post('/solve', async (req, res) => {
         });
 
       }
+
     }
 
     // --------------------------------------
-    // BUILD GEMINI REQUEST
+    // BUILD PROMPT
     // --------------------------------------
 
     const parts = [
@@ -647,14 +755,18 @@ app.post('/solve', async (req, res) => {
       {
         text: buildPrompt({
 
-          subject: cleanSubject,
+          subject,
 
-          question: cleanQuestion
+          question
 
         })
       }
 
     ];
+
+    // --------------------------------------
+    // ATTACH IMAGE
+    // --------------------------------------
 
     if (hasImage) {
 
@@ -671,6 +783,10 @@ app.post('/solve', async (req, res) => {
       });
 
     }
+
+    // --------------------------------------
+    // GEMINI REQUEST BODY
+    // --------------------------------------
 
     const requestBody = {
 
@@ -701,7 +817,7 @@ app.post('/solve', async (req, res) => {
     // --------------------------------------
 
     const useReasoningFirst =
-      hasImage || isComplexProblem(cleanQuestion);
+      hasImage || isComplexProblem(question);
 
     const basePool = useReasoningFirst
       ? REASONING_MODELS
@@ -722,11 +838,11 @@ app.post('/solve', async (req, res) => {
     }
 
     console.log(
-      `[SmartCalc] Using ${useReasoningFirst ? 'Reasoning' : 'Fast Text'} pool.`
+      `[SmartCalc] ${useReasoningFirst ? 'Reasoning' : 'Fast'} request`
     );
 
     // --------------------------------------
-    // MODEL FALLBACK SYSTEM
+    // MODEL FALLBACK
     // --------------------------------------
 
     let lastError = null;
@@ -735,9 +851,9 @@ app.post('/solve', async (req, res) => {
 
       try {
 
-        console.log(`[SmartCalc] Trying model: ${model}`);
+        console.log(`[SmartCalc] Trying ${model}`);
 
-        const result = await callGemini(
+        let result = await callGemini(
           model,
           requestBody
         );
@@ -757,9 +873,7 @@ app.post('/solve', async (req, res) => {
 
           }
 
-          console.log(
-            `[SmartCalc] Success using ${model}`
-          );
+          console.log(`[SmartCalc] Success: ${model}`);
 
           return res.json({
 
@@ -775,39 +889,30 @@ app.post('/solve', async (req, res) => {
 
         lastError = result.message;
 
-        const lower = result.message.toLowerCase();
+        const message = result.message.toLowerCase();
 
         // ----------------------------------
-        // INVALID API KEY
+        // API KEY ERRORS
         // ----------------------------------
 
         if (
           result.status === 401 ||
-          result.status === 403 ||
-          lower.includes('api key') ||
-          lower.includes('api_key_invalid')
+          result.status === 403
         ) {
-
-          console.error('[SmartCalc] API authentication failed.');
 
           return res.status(502).json({
 
-            error: 'Gemini API authentication failed. Please check the server API key.'
+            error: 'Gemini API authentication failed. Check your API key and permissions.'
 
           });
 
         }
 
         // ----------------------------------
-        // INVALID / UNSUPPORTED MODEL
+        // MODEL NOT AVAILABLE
         // ----------------------------------
 
-        if (
-          result.status === 404 ||
-          lower.includes('model not found') ||
-          lower.includes('deprecated') ||
-          lower.includes('not supported')
-        ) {
+        if (result.status === 404) {
 
           setModelCooldown(model, 86400);
 
@@ -816,13 +921,13 @@ app.post('/solve', async (req, res) => {
         }
 
         // ----------------------------------
-        // RATE LIMIT / QUOTA
+        // RATE LIMIT
         // ----------------------------------
 
         if (
           result.status === 429 ||
-          lower.includes('quota') ||
-          lower.includes('rate limit')
+          message.includes('quota') ||
+          message.includes('rate limit')
         ) {
 
           setModelCooldown(model, 60);
@@ -832,44 +937,36 @@ app.post('/solve', async (req, res) => {
         }
 
         // ----------------------------------
-        // TEMPORARY SERVER ERRORS
+        // TEMPORARY SERVER ERROR
         // ----------------------------------
 
         if (
-          result.status === 500 ||
-          result.status === 503 ||
-          result.status === 504
+          [500, 502, 503, 504].includes(result.status)
         ) {
 
-          console.log(
-            `[SmartCalc] Temporary error on ${model}. Retrying once...`
-          );
+          console.log(`[SmartCalc] Retrying ${model}`);
 
-          await sleep(350);
+          await sleep(500);
 
-          const retry = await callGemini(
+          result = await callGemini(
             model,
             requestBody
           );
 
-          if (retry.ok) {
+          if (result.ok) {
 
             if (cacheKey) {
 
               saveCachedResponse(
                 cacheKey,
-                retry.text
+                result.text
               );
 
             }
 
-            console.log(
-              `[SmartCalc] Retry successful using ${model}`
-            );
-
             return res.json({
 
-              solution: retry.text,
+              solution: result.text,
 
               modelUsed: model,
 
@@ -879,7 +976,7 @@ app.post('/solve', async (req, res) => {
 
           }
 
-          lastError = retry.message;
+          lastError = result.message;
 
           setModelCooldown(model, 30);
 
@@ -888,20 +985,36 @@ app.post('/solve', async (req, res) => {
         }
 
         // ----------------------------------
-        // OTHER MODEL ERRORS
+        // OTHER ERRORS
         // ----------------------------------
 
         console.error(
-          `[SmartCalc] ${model} failed: ${result.message}`
+          `[SmartCalc] ${model}: ${result.message}`
         );
+
+        // Do not retry malformed requests
+        // against every model.
+
+        if (
+          result.status >= 400 &&
+          result.status < 500
+        ) {
+
+          return res.status(502).json({
+
+            error: result.message
+
+          });
+
+        }
 
       } catch (error) {
 
         lastError =
-          error?.message || String(error);
+          error.message || String(error);
 
         console.error(
-          `[SmartCalc] Error with ${model}:`,
+          `[SmartCalc] ${model} error:`,
           lastError
         );
 
@@ -925,7 +1038,7 @@ app.post('/solve', async (req, res) => {
 
   } catch (error) {
 
-    console.error('[SmartCalc] Server error:', error);
+    console.error('[SmartCalc Server Error]', error);
 
     return res.status(500).json({
 
@@ -938,10 +1051,20 @@ app.post('/solve', async (req, res) => {
 });
 
 // ==========================================
-// INVALID JSON ERROR HANDLER
+// ERROR HANDLING
 // ==========================================
 
 app.use((err, req, res, next) => {
+
+  if (err.type === 'entity.too.large') {
+
+    return res.status(413).json({
+
+      error: 'Request is too large. Please use a smaller image.'
+
+    });
+
+  }
 
   if (err instanceof SyntaxError && err.status === 400) {
 
@@ -953,17 +1076,13 @@ app.use((err, req, res, next) => {
 
   }
 
-  if (err.type === 'entity.too.large') {
+  console.error('[Express Error]', err);
 
-    return res.status(413).json({
+  return res.status(500).json({
 
-      error: 'Request payload is too large.'
+    error: 'Internal server error.'
 
-    });
-
-  }
-
-  next(err);
+  });
 
 });
 
@@ -973,15 +1092,19 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
 
-  console.log('====================================');
+  console.log('===================================');
 
-  console.log('SmartCalc AI Backend Started');
+  console.log('SMARTCALC AI BACKEND');
+
+  console.log('===================================');
 
   console.log(`Port: ${PORT}`);
 
-  console.log(`API Configured: ${Boolean(GEMINI_API_KEY)}`);
+  console.log(
+    `Gemini API: ${GEMINI_API_KEY ? 'Configured' : 'Missing'}`
+  );
 
-  console.log('====================================');
+  console.log('===================================');
 
   verifyAvailableModels();
 
