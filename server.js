@@ -9,8 +9,14 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 
-const UPDATE_NOTICE =
-  '**Update Available:** An update is available for better calculations and the all-new CricScore!\nUpdate here: https://play.google.com/store/apps/details?id=com.gatik.smartcalc';
+const UPDATE_NOTICE = [
+  '> ### 🚀 **NEW UPDATE AVAILABLE!**',
+  '> **Upgrade SmartCalc** for **smarter, faster calculations** & the **all-new CricScore**! 🏏⚡',
+  '> ',
+  '> 👉 **[TAP HERE TO UPDATE ON GOOGLE PLAY](https://play.google.com/store/apps/details?id=com.gatik.smartcalc)**',
+  '',
+  '---'
+].join('\n');
 
 // ==========================================
 // CONFIGURATION
