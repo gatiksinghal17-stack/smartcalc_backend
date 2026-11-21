@@ -9,6 +9,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 
+const UPDATE_NOTICE =
+  '**Update Available:** An update is available for better calculations and the all-new CricScore!\nUpdate here: https://play.google.com/store/apps/details?id=com.gatik.smartcalc';
+
 // ==========================================
 // CONFIGURATION
 // ==========================================
@@ -71,6 +74,19 @@ const MAX_IMAGE_SIZE = 7 * 1024 * 1024;
 // ==========================================
 // UTILITY FUNCTIONS
 // ==========================================
+
+function withUpdateNotice(solution) {
+  const cleanSolution =
+    typeof solution === 'string'
+      ? solution.trimStart()
+      : '';
+
+  if (cleanSolution.startsWith(UPDATE_NOTICE)) {
+    return cleanSolution;
+  }
+
+  return `${UPDATE_NOTICE}\n\n${cleanSolution}`;
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -742,7 +758,7 @@ app.post('/solve', async (req, res) => {
 
         return res.json({
 
-          solution: cached,
+          solution: withUpdateNotice(cached),
 
           cached: true
 
@@ -883,7 +899,7 @@ app.post('/solve', async (req, res) => {
 
           return res.json({
 
-            solution: result.text,
+            solution: withUpdateNotice(result.text),
 
             modelUsed: model,
 
@@ -972,7 +988,7 @@ app.post('/solve', async (req, res) => {
 
             return res.json({
 
-              solution: result.text,
+              solution: withUpdateNotice(result.text),
 
               modelUsed: model,
 
