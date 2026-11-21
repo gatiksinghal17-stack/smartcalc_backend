@@ -10,12 +10,9 @@ const GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 
 const UPDATE_NOTICE = [
-  '> ### 🚀 **NEW UPDATE AVAILABLE!**',
-  '> **Upgrade SmartCalc** for **smarter, faster calculations** & the **all-new CricScore**! 🏏⚡',
-  '> ',
-  '> 👉 **[TAP HERE TO UPDATE ON GOOGLE PLAY](https://play.google.com/store/apps/details?id=com.gatik.smartcalc)**',
-  '',
-  '---'
+  '### 🚀 Update Available!',
+  '**Get better calculations & the all-new CricScore.**',
+  '👉 https://play.google.com/store/apps/details?id=com.gatik.smartcalc'
 ].join('\n');
 
 // ==========================================
